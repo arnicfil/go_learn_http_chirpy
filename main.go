@@ -1,58 +1,34 @@
 package main
 
+import _ "github.com/lib/pq"
+
 import (
+	"database/sql"
 	"fmt"
-	"io"
+	"github.com/arnicfil/go_learn_http_chirpy/internal/database"
+	"github.com/joho/godotenv"
 	"log"
 	"net/http"
 	"os"
-	"sync/atomic"
 )
 
-type apiConfig struct {
-	fileserverHits atomic.Int32
-}
-
-func (cfg *apiConfig) middlewareMetrixsInc(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		cfg.fileserverHits.Add(1)
-		next.ServeHTTP(w, r)
-	})
-}
-
-func readinessEndpoint(w http.ResponseWriter, r *http.Request) {
-	defer r.Body.Close()
-
-	bodyBytes, err := io.ReadAll(r.Body)
+func run() error {
+	err := godotenv.Load()
 	if err != nil {
-		log.Printf("Error reading body: %v", err)
-		http.Error(w, "can't read body", http.StatusInternalServerError)
-		return
+		return err
 	}
 
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	w.WriteHeader(http.StatusOK)
-	w.Write(bodyBytes)
-}
+	dbURL := os.Getenv("DB_URL")
+	db, err := sql.Open("postgres", dbURL)
+	if err != nil {
+		return err
+	}
+	dbQueries := database.New(db)
 
-func (cfg *apiConfig) hitsEndpoint(w http.ResponseWriter, r *http.Request) {
-	defer r.Body.Close()
+	apiCfg := apiConfig{
+		queries: dbQueries,
+	}
 
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	w.WriteHeader(http.StatusOK)
-	hitsValue := cfg.fileserverHits.Load()
-	w.Write(fmt.Appendf(nil, "Hits: %d", hitsValue))
-}
-
-func (cfg *apiConfig) resetEndpoint(w http.ResponseWriter, r *http.Request) {
-	cfg.fileserverHits.Store(0)
-
-	defer r.Body.Close()
-	w.WriteHeader(http.StatusOK)
-}
-
-func run() error {
-	var apiCfg apiConfig
 	filepathRoot, err := os.Getwd()
 	if err != nil {
 		return err
@@ -61,10 +37,11 @@ func run() error {
 	fileSystem := http.FileServer(http.Dir((filepathRoot)))
 
 	DefaultServeMux := http.NewServeMux()
-	DefaultServeMux.Handle("/app/", apiCfg.middlewareMetrixsInc(http.StripPrefix("/app/", fileSystem)))
-	DefaultServeMux.HandleFunc("/healthz/", readinessEndpoint)
-	DefaultServeMux.HandleFunc("/metrics/", apiCfg.hitsEndpoint)
-	DefaultServeMux.HandleFunc("/reset/", apiCfg.resetEndpoint)
+	DefaultServeMux.Handle("/app/", apiCfg.middlewareMetricsInc(http.StripPrefix("/app/", fileSystem)))
+	DefaultServeMux.HandleFunc("GET /api/healthz", readinessEndpoint)
+	DefaultServeMux.HandleFunc("GET /admin/metrics", apiCfg.hitsEndpoint)
+	DefaultServeMux.HandleFunc("POST /admin/reset", apiCfg.resetEndpoint)
+	DefaultServeMux.HandleFunc("POST /api/validate_chirp", validate_chirpEndpoint)
 
 	port := "8080"
 	s := &http.Server{
