@@ -6,18 +6,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/arnicfil/go_learn_http_chirpy/internal/database"
+	"github.com/google/uuid"
 	"io"
 	"log"
 	"net/http"
 	"slices"
 	"strings"
-	"sync/atomic"
+	"time"
 )
-
-type apiConfig struct {
-	fileserverHits atomic.Int32
-	queries        *database.Queries
-}
 
 type chirpValue struct {
 	Body string `json:"body"`
@@ -25,6 +21,13 @@ type chirpValue struct {
 
 type chirpError struct {
 	Error string `json:"error"`
+}
+
+type User struct {
+	ID        uuid.UUID `json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	Email     string    `json:"email"`
 }
 
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
@@ -59,9 +62,20 @@ func (cfg *apiConfig) hitsEndpoint(w http.ResponseWriter, r *http.Request) {
 }
 
 func (cfg *apiConfig) resetEndpoint(w http.ResponseWriter, r *http.Request) {
-	cfg.fileserverHits.Store(0)
-
 	defer r.Body.Close()
+	if cfg.platform != "dev" {
+		w.WriteHeader(http.StatusForbidden)
+		return
+	}
+
+	cfg.fileserverHits.Store(0)
+	err := cfg.queries.DeleteUsers(r.Context())
+	if err != nil {
+		log.Printf("Error deleting user: %s", err)
+		respondWithError(w, http.StatusInternalServerError, "Something went wrong")
+		return
+	}
+
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -91,26 +105,6 @@ func respondWithJSON(w http.ResponseWriter, status int, vals any) {
 	w.Write(body)
 }
 
-func validate_chirpEndpoint(w http.ResponseWriter, r *http.Request) {
-	defer r.Body.Close()
-
-	decoder := json.NewDecoder(r.Body)
-	var chirpval chirpValue
-	if err := decoder.Decode(&chirpval); err != nil {
-		log.Printf("Error decoding request body: %s", err)
-		respondWithError(w, http.StatusBadRequest, "Something went wrong")
-		return
-	}
-
-	if len(chirpval.Body) > 140 {
-		respondWithError(w, http.StatusBadRequest, "Chirp is too long")
-		return
-	}
-
-	chirpval.Body = cleanString(chirpval.Body)
-	respondWithJSON(w, http.StatusOK, chirpval)
-}
-
 func cleanString(s string) (cleanS string) {
 	var badWords = []string{"kerfuffle", "sharbert", "fornax"}
 	words := strings.Fields(s)
@@ -121,4 +115,64 @@ func cleanString(s string) (cleanS string) {
 	}
 
 	return strings.Join(words, " ")
+}
+
+func (cfg *apiConfig) create_userEndpoint(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close()
+	type email struct {
+		Email string `json:"email"`
+	}
+
+	decoder := json.NewDecoder(r.Body)
+	var mail email
+	if err := decoder.Decode(&mail); err != nil {
+		log.Printf("Error decoding request body: %s", err)
+		respondWithError(w, http.StatusBadRequest, "Something went wrong")
+		return
+	}
+
+	user, err := cfg.queries.CreateUser(r.Context(), mail.Email)
+	if err != nil {
+		log.Printf("Error creating user: %s", err)
+		respondWithError(w, http.StatusInternalServerError, "Something went wrong")
+		return
+	}
+
+	respondWithJSON(w, http.StatusCreated, user)
+}
+
+func (cfg *apiConfig) create_chirpEndpoint(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close()
+
+	type payload struct {
+		Body   string    `json:"body"`
+		UserID uuid.UUID `json:"user_id"`
+	}
+
+	decoder := json.NewDecoder(r.Body)
+	var postVal payload
+	if err := decoder.Decode(&postVal); err != nil {
+		log.Printf("Error decoding request body: %s", err)
+		respondWithError(w, http.StatusBadRequest, "Something went wrong")
+		return
+	}
+
+	if len(postVal.Body) > 140 {
+		respondWithError(w, http.StatusBadRequest, "Chirp is too long")
+		return
+	}
+
+	postVal.Body = cleanString(postVal.Body)
+
+	chirp, err := cfg.queries.CreateChirp(r.Context(), database.CreateChirpParams{
+		Body:   postVal.Body,
+		UserID: postVal.UserID,
+	})
+	if err != nil {
+		log.Printf("Error creating chirp: %s", err)
+		respondWithError(w, http.StatusInternalServerError, "Something went wrong")
+		return
+	}
+
+	respondWithJSON(w, http.StatusCreated, chirp)
 }

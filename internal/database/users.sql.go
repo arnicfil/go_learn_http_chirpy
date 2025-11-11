@@ -7,20 +7,19 @@ package database
 
 import (
 	"context"
-	"time"
 )
 
 const createUser = `-- name: CreateUser :one
 INSERT INTO
     users (id, email, created_at, updated_at)
 VALUES
-    (gen_random_uuid(), NOW(), NOW(), $1)
+    (gen_random_uuid(), $1, NOW(), NOW())
 RETURNING
     id, email, created_at, updated_at
 `
 
-func (q *Queries) CreateUser(ctx context.Context, updatedAt time.Time) (User, error) {
-	row := q.db.QueryRowContext(ctx, createUser, updatedAt)
+func (q *Queries) CreateUser(ctx context.Context, email string) (User, error) {
+	row := q.db.QueryRowContext(ctx, createUser, email)
 	var i User
 	err := row.Scan(
 		&i.ID,
@@ -29,4 +28,14 @@ func (q *Queries) CreateUser(ctx context.Context, updatedAt time.Time) (User, er
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const deleteUsers = `-- name: DeleteUsers :exec
+DELETE FROM
+    users
+`
+
+func (q *Queries) DeleteUsers(ctx context.Context) error {
+	_, err := q.db.ExecContext(ctx, deleteUsers)
+	return err
 }

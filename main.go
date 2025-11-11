@@ -10,7 +10,14 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"sync/atomic"
 )
+
+type apiConfig struct {
+	fileserverHits atomic.Int32
+	queries        *database.Queries
+	platform       string
+}
 
 func run() error {
 	err := godotenv.Load()
@@ -26,7 +33,8 @@ func run() error {
 	dbQueries := database.New(db)
 
 	apiCfg := apiConfig{
-		queries: dbQueries,
+		queries:  dbQueries,
+		platform: os.Getenv("PLATFORM"),
 	}
 
 	filepathRoot, err := os.Getwd()
@@ -41,7 +49,8 @@ func run() error {
 	DefaultServeMux.HandleFunc("GET /api/healthz", readinessEndpoint)
 	DefaultServeMux.HandleFunc("GET /admin/metrics", apiCfg.hitsEndpoint)
 	DefaultServeMux.HandleFunc("POST /admin/reset", apiCfg.resetEndpoint)
-	DefaultServeMux.HandleFunc("POST /api/validate_chirp", validate_chirpEndpoint)
+	DefaultServeMux.HandleFunc("POST /api/users", apiCfg.create_userEndpoint)
+	DefaultServeMux.HandleFunc("POST /api/chirps", apiCfg.create_chirpEndpoint)
 
 	port := "8080"
 	s := &http.Server{
