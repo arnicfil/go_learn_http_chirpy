@@ -56,6 +56,10 @@ func run() error {
 	DefaultServeMux.HandleFunc("GET /api/chirps", apiCfg.get_chirpsEndpoint)
 	DefaultServeMux.HandleFunc("GET /api/chirps/{chirpID}", apiCfg.get_chirpEndpoint)
 	DefaultServeMux.HandleFunc("POST /api/login", apiCfg.loginEndpoint)
+	DefaultServeMux.HandleFunc("POST /api/refresh", apiCfg.refreshEndpoint)
+	DefaultServeMux.HandleFunc("POST /api/revoke", apiCfg.revokeEndpoint)
+	DefaultServeMux.HandleFunc("PUT /api/users", apiCfg.update_passwordEndpoint)
+	DefaultServeMux.HandleFunc("DELETE /api/chirps/{chirpID}", apiCfg.delete_chirpEndpoint)
 
 	port := "8080"
 	s := &http.Server{

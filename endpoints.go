@@ -20,21 +20,28 @@ type chirpError struct {
 	Error string `json:"error"`
 }
 
-type UserResponse struct {
-	ID        uuid.UUID `json:"id"`
-	Email     string    `json:"email"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
-	Token     string    `json:"token"`
+type login struct {
+	Password string `json:"password"`
+	Email    string `json:"email"`
 }
 
-func userToResponse(u database.User, token string) UserResponse {
+type UserResponse struct {
+	ID           uuid.UUID `json:"id"`
+	Email        string    `json:"email"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+	Token        string    `json:"token"`
+	RefreshToken string    `json:"refresh_token"`
+}
+
+func userToResponse(u database.User, token string, refresh_token string) UserResponse {
 	return UserResponse{
-		ID:        u.ID,
-		Email:     u.Email,
-		CreatedAt: u.CreatedAt,
-		UpdatedAt: u.UpdatedAt,
-		Token:     token,
+		ID:           u.ID,
+		Email:        u.Email,
+		CreatedAt:    u.CreatedAt,
+		UpdatedAt:    u.UpdatedAt,
+		Token:        token,
+		RefreshToken: refresh_token,
 	}
 }
 
@@ -248,11 +255,6 @@ func (cfg *apiConfig) get_chirpEndpoint(w http.ResponseWriter, r *http.Request) 
 
 func (cfg *apiConfig) loginEndpoint(w http.ResponseWriter, r *http.Request) {
 	defer r.Body.Close()
-	type login struct {
-		Password           string `json:"password"`
-		Email              string `json:"email"`
-		Expires_in_seconds int    `json:"expires_in_seconds"`
-	}
 
 	decoder := json.NewDecoder(r.Body)
 	var l login
@@ -260,10 +262,6 @@ func (cfg *apiConfig) loginEndpoint(w http.ResponseWriter, r *http.Request) {
 		log.Printf("Error decoding request body: %s", err)
 		respondWithError(w, http.StatusBadRequest, "Something went wrong")
 		return
-	}
-
-	if l.Expires_in_seconds == 0 {
-		l.Expires_in_seconds = 3600
 	}
 
 	user, err := cfg.queries.GetUserWithEmail(r.Context(), l.Email)
@@ -280,16 +278,160 @@ func (cfg *apiConfig) loginEndpoint(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	jwt, err := auth.MakeJWT(user.ID, cfg.secret, time.Second*time.Duration(l.Expires_in_seconds))
-	if err != nil {
-		log.Printf("Error making jwt: %s", err)
-		respondWithError(w, http.StatusUnauthorized, "Incorrent password or email")
-		return
-	}
-
 	if match {
-		respondWithJSON(w, http.StatusOK, userToResponse(user, jwt))
+		jwt, err := auth.MakeJWT(user.ID, cfg.secret, time.Hour)
+		if err != nil {
+			log.Printf("Error making jwt: %s", err)
+			respondWithError(w, http.StatusUnauthorized, "Incorrent password or email")
+			return
+		}
+
+		token, err := auth.MakeRefreshToken()
+		if err != nil {
+			log.Printf("Error making refresh_token: %s", err)
+			respondWithError(w, http.StatusUnauthorized, "Incorrent password or email")
+			return
+		}
+
+		_, err = cfg.queries.CreateToken(r.Context(), database.CreateTokenParams{
+			Token:     token,
+			UserID:    user.ID,
+			ExpiresAt: time.Now().Add(time.Hour * 24 * 60),
+		})
+
+		if err != nil {
+			log.Printf("Error while inserting refresh_token into database: %s", err)
+			respondWithError(w, http.StatusInternalServerError, "Something went wrong")
+			return
+		}
+
+		respondWithJSON(w, http.StatusOK, userToResponse(user, jwt, token))
 	} else {
 		respondWithError(w, http.StatusUnauthorized, "Incorrent password or email")
 	}
+}
+
+func (cfg *apiConfig) refreshEndpoint(w http.ResponseWriter, r *http.Request) {
+	user_token, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		log.Printf("Error getting token from header: %v", err)
+		respondWithError(w, http.StatusUnauthorized, "Incorrect or non existent token")
+		return
+	}
+
+	valid, token := cfg.isTokenValid(user_token, w, r)
+	if !valid {
+		return
+	}
+
+	user_id, err := cfg.queries.GetUserForToken(r.Context(), token.Token)
+	if err != nil || !user_id.Valid {
+		log.Printf("Error geting user for token: %v", err)
+		respondWithError(w, http.StatusInternalServerError, "Something went wrong")
+		return
+	}
+
+	new_token, err := auth.MakeRefreshToken()
+	if err != nil {
+		log.Printf("Error creating user token: %v", err)
+		respondWithError(w, http.StatusInternalServerError, "Something went wrong")
+		return
+	}
+
+	_, err = cfg.queries.CreateToken(r.Context(), database.CreateTokenParams{
+		Token:     new_token,
+		UserID:    user_id.UUID,
+		ExpiresAt: time.Now().Add(time.Hour),
+	})
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (cfg *apiConfig) revokeEndpoint(w http.ResponseWriter, r *http.Request) {
+	user_token, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		log.Printf("Error getting token from header: %v", err)
+		respondWithError(w, http.StatusUnauthorized, "Incorrect or non existent token")
+		return
+	}
+
+	val, token := cfg.isTokenValid(user_token, w, r)
+	if !val {
+		return
+	}
+
+	err = cfg.queries.RevokeToken(r.Context(), token.Token)
+	if err != nil {
+		log.Printf("Error revoking token: %v", err)
+		respondWithError(w, http.StatusInternalServerError, "Something went wrong")
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (cfg *apiConfig) isTokenValid(token string, w http.ResponseWriter, r *http.Request) (bool, database.GetTokenRow) {
+	databaseToken, err := cfg.queries.GetToken(r.Context(), token)
+	if err != nil {
+		log.Printf("Error getting token from database: %v", err)
+		respondWithError(w, http.StatusUnauthorized, "Incorrect or non existent token")
+		return false, database.GetTokenRow{}
+	} else if time.Now().After(databaseToken.ExpiresAt) {
+		log.Print("Token is expired")
+		respondWithError(w, http.StatusUnauthorized, "Incorrect or non existent token")
+		return false, database.GetTokenRow{}
+	} else if databaseToken.RevokedAt.Valid && time.Now().After(databaseToken.RevokedAt.Time) {
+		log.Print("Token is revoked")
+		respondWithError(w, http.StatusUnauthorized, "Incorrect or non existent token")
+		return false, database.GetTokenRow{}
+
+	}
+
+	return true, databaseToken
+}
+
+func (cfg *apiConfig) update_passwordEndpoint(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close()
+
+	user_token, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		log.Printf("Error getting token from header: %v", err)
+		respondWithError(w, http.StatusUnauthorized, "Incorrect or non existent token")
+		return
+	}
+
+	val, _ := cfg.isTokenValid(user_token, w, r)
+	if !val {
+		return
+	}
+
+	user_id, err := cfg.queries.GetUserForToken(r.Context(), user_token)
+	if err != nil || !user_id.Valid {
+		log.Printf("Error getting user for token: %v", err)
+		respondWithError(w, http.StatusUnauthorized, "Incorrect or non existent token")
+		return
+	}
+
+	decoder := json.NewDecoder(r.Body)
+	var l login
+	if err := decoder.Decode(&l); err != nil {
+		log.Printf("Error decoding login body: %v", err)
+		respondWithError(w, http.StatusInternalServerError, "Invalid login")
+		return
+	}
+
+	hashed_password, err := auth.HashPassword(l.Password)
+	if err != nil {
+		log.Printf("Error hashing password: %v", err)
+		respondWithError(w, http.StatusInternalServerError, "Something went wrong")
+		return
+	}
+
+	user, err := cfg.queries.UpdateUserEmailAndPassword(r.Context(), database.UpdateUserEmailAndPasswordParams{
+		ID:             user_id.UUID,
+		Email:          l.Email,
+		HashedPassword: hashed_password,
+	})
+
+	respondWithJSON(w, http.StatusOK, user)
 }
