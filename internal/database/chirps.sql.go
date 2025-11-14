@@ -47,3 +47,63 @@ func (q *Queries) DeleteChirps(ctx context.Context) error {
 	_, err := q.db.ExecContext(ctx, deleteChirps)
 	return err
 }
+
+const getAllChirps = `-- name: GetAllChirps :many
+SELECT
+    id, body, user_id, created_at, updated_at
+FROM
+    chirps
+ORDER BY
+    created_at
+`
+
+func (q *Queries) GetAllChirps(ctx context.Context) ([]Chirp, error) {
+	rows, err := q.db.QueryContext(ctx, getAllChirps)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Chirp
+	for rows.Next() {
+		var i Chirp
+		if err := rows.Scan(
+			&i.ID,
+			&i.Body,
+			&i.UserID,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const getChirp = `-- name: GetChirp :one
+SELECT
+    id, body, user_id, created_at, updated_at
+FROM
+    chirps
+WHERE
+    id = $1
+`
+
+func (q *Queries) GetChirp(ctx context.Context, id uuid.UUID) (Chirp, error) {
+	row := q.db.QueryRowContext(ctx, getChirp, id)
+	var i Chirp
+	err := row.Scan(
+		&i.ID,
+		&i.Body,
+		&i.UserID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}

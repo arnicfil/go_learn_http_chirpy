@@ -17,6 +17,7 @@ type apiConfig struct {
 	fileserverHits atomic.Int32
 	queries        *database.Queries
 	platform       string
+	secret         string
 }
 
 func run() error {
@@ -35,6 +36,7 @@ func run() error {
 	apiCfg := apiConfig{
 		queries:  dbQueries,
 		platform: os.Getenv("PLATFORM"),
+		secret:   os.Getenv("SECRET"),
 	}
 
 	filepathRoot, err := os.Getwd()
@@ -51,6 +53,9 @@ func run() error {
 	DefaultServeMux.HandleFunc("POST /admin/reset", apiCfg.resetEndpoint)
 	DefaultServeMux.HandleFunc("POST /api/users", apiCfg.create_userEndpoint)
 	DefaultServeMux.HandleFunc("POST /api/chirps", apiCfg.create_chirpEndpoint)
+	DefaultServeMux.HandleFunc("GET /api/chirps", apiCfg.get_chirpsEndpoint)
+	DefaultServeMux.HandleFunc("GET /api/chirps/{chirpID}", apiCfg.get_chirpEndpoint)
+	DefaultServeMux.HandleFunc("POST /api/login", apiCfg.loginEndpoint)
 
 	port := "8080"
 	s := &http.Server{
