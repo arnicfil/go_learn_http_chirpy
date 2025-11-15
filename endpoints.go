@@ -435,3 +435,47 @@ func (cfg *apiConfig) update_passwordEndpoint(w http.ResponseWriter, r *http.Req
 
 	respondWithJSON(w, http.StatusOK, user)
 }
+
+func (cfg *apiConfig) delete_chirpEndpoint(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close()
+	chirpId := r.PathValue("chirpID")
+
+	chirpIdUuid, err := uuid.Parse(chirpId)
+	if err != nil {
+		log.Printf("Error transforming uuid: %s", err)
+		respondWithError(w, http.StatusNotFound, "Invalid uuid")
+		return
+	}
+
+	user_token, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		log.Printf("Error getting token from header: %v", err)
+		respondWithError(w, http.StatusUnauthorized, "Incorrect or non existent token")
+		return
+	}
+
+	val, _ := cfg.isTokenValid(user_token, w, r)
+	if !val {
+		return
+	}
+
+	user_id, err := cfg.queries.GetUserForToken(r.Context(), user_token)
+	if err != nil || !user_id.Valid {
+		log.Printf("Error getting user for token: %v", err)
+		respondWithError(w, http.StatusUnauthorized, "Incorrect or non existent token")
+		return
+	}
+
+	chirp, err := cfg.queries.GetChirp(r.Context(), chirpIdUuid)
+	if err != nil {
+		log.Printf("Error getting chirp: %v", err)
+		respondWithError(w, http.StatusUnauthorized, "Incorrect or non existent token")
+		return
+	}
+
+	if chirp.UserID != user_id.UUID {
+		log.Printf("Error chirp user_id doesn't match users id")
+		respondWithError(w, http.StatusUnauthorized, "Incorrect or non existent token")
+		return
+	}
+}
