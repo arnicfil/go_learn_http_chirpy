@@ -469,13 +469,20 @@ func (cfg *apiConfig) delete_chirpEndpoint(w http.ResponseWriter, r *http.Reques
 	chirp, err := cfg.queries.GetChirp(r.Context(), chirpIdUuid)
 	if err != nil {
 		log.Printf("Error getting chirp: %v", err)
-		respondWithError(w, http.StatusUnauthorized, "Incorrect or non existent token")
+		respondWithError(w, http.StatusNotFound, "Chirp was not found")
 		return
 	}
 
 	if chirp.UserID != user_id.UUID {
 		log.Printf("Error chirp user_id doesn't match users id")
-		respondWithError(w, http.StatusUnauthorized, "Incorrect or non existent token")
+		respondWithError(w, http.StatusForbidden, "Incorrect or non existent token")
+		return
+	}
+
+	err = cfg.queries.DeleteChirp(r.Context(), chirp.ID)
+	if err != nil {
+		log.Printf("Error deleting the chirp: %v", err)
+		respondWithError(w, http.StatusInternalServerError, "Something went wrong")
 		return
 	}
 }
